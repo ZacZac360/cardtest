@@ -7,6 +7,7 @@ require_once __DIR__ . '/../db.php';
 
 header('Content-Type: application/json; charset=utf-8');
 
+const AI_TURN_DELAY_MS = 900;
 const ROOM_CODE = 'PROTO';
 const ELEMENTS = ['Fire', 'Water', 'Lightning', 'Earth', 'Wind', 'Wood'];
 const STRONG_AGAINST = [
@@ -649,51 +650,69 @@ function ai_choose_element(array $hand, ?string $avoidElement = null): string {
 function run_ai_until_human_or_end(mysqli $mysqli, array &$room): void {
   $roomId = (int)$room['id'];
 
-  for ($guard = 0; $guard < 40; $guard++) {
-    if (($room['status'] ?? '') !== 'playing') return;
-    if ((int)$room['winner_seat'] > 0) return;
+  if (($room['status'] ?? '') !== 'playing') return;
+  if ((int)($room['winner_seat'] ?? 0) > 0) return;
 
-    $currentSeat = (int)($room['current_turn_seat'] ?? 0);
-    if ($currentSeat <= 0) return;
+  $currentSeat = (int)($room['current_turn_seat'] ?? 0);
+  if ($currentSeat <= 0) return;
 
-    $stmt = $mysqli->prepare("
-      SELECT player_type
-      FROM room_players
-      WHERE room_id = ? AND seat_no = ?
-      LIMIT 1
-    ");
-    $stmt->bind_param('ii', $roomId, $currentSeat);
-    $stmt->execute();
-    $row = $stmt->get_result()->fetch_assoc();
-    $stmt->close();
+  $stmt = $mysqli->prepare("
+    SELECT player_type
+    FROM room_players
+    WHERE room_id = ? AND seat_no = ?
+    LIMIT 1
+  ");
+  $stmt->bind_param('ii', $roomId, $currentSeat);
+  $stmt->execute();
+  $row = $stmt->get_result()->fetch_assoc();
+  $stmt->close();
 
-    $type = (string)($row['player_type'] ?? '');
-    if ($type !== 'ai') return;
-
-    $hand = get_hand($mysqli, $roomId, $currentSeat);
-    $activeCard = jdecode($room['active_card_json'] ?? null, null);
-    $pendingDraw = (int)$room['pending_draw'];
-    $playable = get_playable_cards($hand, $activeCard, $pendingDraw);
-
-    if (!$playable) {
-      apply_pass_action($mysqli, $room, $currentSeat);
-      $room = get_room($mysqli, ROOM_CODE);
-      continue;
-    }
-
-    usort($playable, fn($a, $b) => ai_card_score($a, $activeCard, $pendingDraw) <=> ai_card_score($b, $activeCard, $pendingDraw));
-    $pick = $playable[0];
-    $chosenElement = null;
-
-    if (($pick['kind'] ?? '') === 'plus4') {
-      $handWithoutPick = array_values(array_filter($hand, fn($card) => ($card['id'] ?? '') !== ($pick['id'] ?? '')));
-      $targetElement = get_effective_element($activeCard);
-      $chosenElement = ai_choose_element($handWithoutPick, $targetElement);
-    }
-
-    apply_play_action($mysqli, $room, $currentSeat, (string)$pick['id'], $chosenElement);
-    $room = get_room($mysqli, ROOM_CODE);
+  $type = (string)($row['player_type'] ?? '');
+  if ($type !== 'ai') {
+    return; // only act if current turn is AI
   }
+
+  // one AI move only per poll/request
+  usleep(AI_TURN_DELAY_MS * 1000);
+
+  $room = get_room($mysqli, ROOM_CODE);
+  if (!$room) return;
+  if (($room['status'] ?? '') !== 'playing') return;
+  if ((int)($room['winner_seat'] ?? 0) > 0) return;
+
+  $currentSeat = (int)($room['current_turn_seat'] ?? 0);
+  if ($currentSeat <= 0) return;
+
+  $hand = get_hand($mysqli, $roomId, $currentSeat);
+  $activeCard = jdecode($room['active_card_json'] ?? null, null);
+  $pendingDraw = (int)$room['pending_draw'];
+  $playable = get_playable_cards($hand, $activeCard, $pendingDraw);
+
+  if (!$playable) {
+    apply_pass_action($mysqli, $room, $currentSeat);
+    $room = get_room($mysqli, ROOM_CODE);
+    return;
+  }
+
+  usort(
+    $playable,
+    fn($a, $b) => ai_card_score($a, $activeCard, $pendingDraw) <=> ai_card_score($b, $activeCard, $pendingDraw)
+  );
+
+  $pick = $playable[0];
+  $chosenElement = null;
+
+  if (($pick['kind'] ?? '') === 'plus4') {
+    $handWithoutPick = array_values(array_filter(
+      $hand,
+      fn($card) => ($card['id'] ?? '') !== ($pick['id'] ?? '')
+    ));
+    $targetElement = get_effective_element($activeCard);
+    $chosenElement = ai_choose_element($handWithoutPick, $targetElement);
+  }
+
+  apply_play_action($mysqli, $room, $currentSeat, (string)$pick['id'], $chosenElement);
+  $room = get_room($mysqli, ROOM_CODE);
 }
 
 function room_state_payload(mysqli $mysqli, array $room, string $token): array {

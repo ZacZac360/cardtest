@@ -106,7 +106,5 @@ try {
 }
 
 $room = get_room($mysqli, ROOM_CODE);
-run_ai_until_human_or_end($mysqli, $room);
-$room = get_room($mysqli, ROOM_CODE);
 
 json_out(room_state_payload($mysqli, $room, $token));
