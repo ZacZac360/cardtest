@@ -16,8 +16,25 @@ if ($me) {
 }
 
 if (($room['status'] ?? '') === 'playing') {
-  run_ai_until_human_or_end($mysqli, $room);
-  $room = get_room($mysqli, ROOM_CODE);
+  $currentSeat = (int)($room['current_turn_seat'] ?? 0);
+
+  if ($currentSeat > 0) {
+    $stmt = $mysqli->prepare("
+      SELECT player_type
+      FROM room_players
+      WHERE room_id = ? AND seat_no = ?
+      LIMIT 1
+    ");
+    $stmt->bind_param('ii', $room['id'], $currentSeat);
+    $stmt->execute();
+    $row = $stmt->get_result()->fetch_assoc();
+    $stmt->close();
+
+    if (($row['player_type'] ?? '') === 'ai') {
+      run_ai_until_human_or_end($mysqli, $room);
+      $room = get_room($mysqli, ROOM_CODE);
+    }
+  }
 }
 
 json_out(room_state_payload($mysqli, $room, $token));
