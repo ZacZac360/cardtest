@@ -669,12 +669,13 @@ function run_ai_until_human_or_end(mysqli $mysqli, array &$room): void {
 
   $type = (string)($row['player_type'] ?? '');
   if ($type !== 'ai') {
-    return; // only act if current turn is AI
+    return;
   }
 
-  // one AI move only per poll/request
+  // Keep the small AI delay so turns feel natural.
   usleep(AI_TURN_DELAY_MS * 1000);
 
+  // Re-fetch after delay because another request may have changed the turn.
   $room = get_room($mysqli, ROOM_CODE);
   if (!$room) return;
   if (($room['status'] ?? '') !== 'playing') return;
@@ -682,6 +683,24 @@ function run_ai_until_human_or_end(mysqli $mysqli, array &$room): void {
 
   $currentSeat = (int)($room['current_turn_seat'] ?? 0);
   if ($currentSeat <= 0) return;
+
+  // Critical multiplayer fix:
+  // check AGAIN that the current turn still belongs to an AI.
+  $stmt = $mysqli->prepare("
+    SELECT player_type
+    FROM room_players
+    WHERE room_id = ? AND seat_no = ?
+    LIMIT 1
+  ");
+  $stmt->bind_param('ii', $roomId, $currentSeat);
+  $stmt->execute();
+  $row = $stmt->get_result()->fetch_assoc();
+  $stmt->close();
+
+  $type = (string)($row['player_type'] ?? '');
+  if ($type !== 'ai') {
+    return;
+  }
 
   $hand = get_hand($mysqli, $roomId, $currentSeat);
   $activeCard = jdecode($room['active_card_json'] ?? null, null);
